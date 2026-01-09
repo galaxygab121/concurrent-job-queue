@@ -8,3 +8,11 @@ out_test/
 # IDE files
 .idea/
 .vscode/
+
+# Build output
+out_test/
+out/
+
+# Build output
+out_test/
+out/

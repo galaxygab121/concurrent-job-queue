@@ -1,0 +1,56 @@
+# Name that appears in the GitHub Actions UI
+name: CI
+
+# When to run this workflow:
+# - on pushes to main
+# - on pull requests targeting main
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  # Job name (can be anything)
+  test:
+    # The runner machine GitHub provides
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: pull your repository code into the runner
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # Step 2: install Java (Temurin = Eclipse Adoptium)
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      # Step 3: download the JUnit Console Standalone JAR
+      # We download it in CI so your repo doesn't need to commit the jar.
+      - name: Download JUnit Console Standalone
+        run: |
+          mkdir -p lib
+          if [ ! -f lib/junit-platform-console-standalone.jar ]; then
+            curl -L -o lib/junit-platform-console-standalone.jar \
+              https://repo1.maven.org/maven2/org/junit/platform/junit-platform-console-standalone/1.10.2/junit-platform-console-standalone-1.10.2.jar
+          fi
+
+      # Step 4: compile both src/ and test/ into out_test/
+      - name: Compile (src + test)
+        run: |
+          rm -rf out_test
+          mkdir -p out_test
+          javac -cp "lib/junit-platform-console-standalone.jar" \
+            -d out_test \
+            $(find src -name "*.java") \
+            $(find test -name "*.java")
+
+      # Step 5: run tests by scanning compiled classes in out_test/
+      - name: Run tests
+        run: |
+          java -jar lib/junit-platform-console-standalone.jar \
+            -cp out_test \
+            --scan-class-path
