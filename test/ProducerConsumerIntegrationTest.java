@@ -1,5 +1,4 @@
 import org.junit.jupiter.api.Test;
-import static org.junit.jupiter.api.Assertions.*;
 
 import queue.JobQueue;
 import worker.Consumer;
@@ -9,12 +8,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-public class ProducerConsumerIntegrationTest {
+import static org.junit.jupiter.api.Assertions.*;
 
-    @Test
-    void endToEnd_allJobsProcessed_noDeadlock() throws Exception {
-        // (keep your existing end-to-end test as-is)
-    }
+public class ProducerConsumerIntegrationTest {
 
     @Test
     void fairness_distribution_is_reasonable() throws Exception {
@@ -34,7 +30,6 @@ public class ProducerConsumerIntegrationTest {
         // --- Start consumers ---
         List<Consumer> consumerWorkers = new ArrayList<>();
         List<Thread> consumerThreads = new ArrayList<>();
-
         for (int i = 0; i < consumers; i++) {
             Consumer c = new Consumer(queue, i + 1, verbose, logEvery, consumerNoSleep);
             consumerWorkers.add(c);
@@ -47,7 +42,7 @@ public class ProducerConsumerIntegrationTest {
         // --- Start producers ---
         List<Thread> producerThreads = new ArrayList<>();
         for (int i = 0; i < producers; i++) {
-            long seed = 100L + i; // deterministic-ish
+            long seed = 100L + i; // deterministic-ish for repeatability
             Producer p = new Producer(queue, i + 1, jobsPerProducer, seed, verbose, logEvery, producerNoSleep);
 
             Thread t = new Thread(p, "Producer-" + (i + 1));
@@ -55,12 +50,11 @@ public class ProducerConsumerIntegrationTest {
             t.start();
         }
 
-        // --- Wait for producers then shutdown queue ---
+        // --- Wait for producers then shutdown ---
         for (Thread t : producerThreads) t.join();
-
         queue.shutdown();
 
-        // --- Wait for consumers to drain queue ---
+        // --- Wait for consumers to drain ---
         for (Thread t : consumerThreads) t.join();
 
         // --- Collect counts ---
@@ -72,7 +66,6 @@ public class ProducerConsumerIntegrationTest {
         for (int i = 0; i < consumerWorkers.size(); i++) {
             int processed = consumerWorkers.get(i).getProcessedCount();
             counts[i] = processed;
-
             total += processed;
             min = Math.min(min, processed);
             max = Math.max(max, processed);
@@ -81,12 +74,12 @@ public class ProducerConsumerIntegrationTest {
         int expectedTotal = producers * jobsPerProducer;
         assertEquals(expectedTotal, total, "All jobs should be processed");
 
-        // --- Fairness metrics ---
+        // --- Metrics ---
         double jain = jainsFairnessIndex(counts);
         double gini = giniCoefficient(counts);
         double minShare = (total == 0) ? 0.0 : (min / (double) total);
 
-        // --- Report (useful in CI logs) ---
+        // --- Print report (useful in CI logs) ---
         System.out.println("\n=== Fairness Test Report ===");
         System.out.println("Counts: " + Arrays.toString(counts));
         System.out.println("Total : " + total);
@@ -94,15 +87,16 @@ public class ProducerConsumerIntegrationTest {
         System.out.printf("Gini  : %.4f%n", gini);
         System.out.printf("MinShare: %.4f (min=%d, max=%d)%n", minShare, min, max);
 
-        // --- Tightened thresholds (based on your new output: Jain~0.9998, minShare~0.1231) ---
-        // These are still safe but will catch regressions/starvation.
-        final double JAIN_THRESHOLD = 0.98;     // close to perfect, but tolerant
-        final double GINI_THRESHOLD = 0.05;     // low inequality expected
-        final double MIN_SHARE_THRESHOLD = 0.10; // 8 consumers -> fair share ~0.125
+        // --- Tightened thresholds based on your measured run:
+        // Jain ~ 0.9998, Gini ~ 0.0080, MinShare ~ 0.1225
+        final double JAIN_THRESHOLD = 0.995;
+        final double GINI_THRESHOLD = 0.03;
+        final double MIN_SHARE_THRESHOLD = 0.115;
 
-        // Optional: hard starvation check (good since your new output shows fairness is fixed)
+        // Starvation guard (no consumer should get 0 jobs)
         assertTrue(min > 0, "Starvation detected: at least one consumer processed 0 jobs");
 
+        // Fairness assertions
         assertTrue(jain >= JAIN_THRESHOLD, "Fairness too low (Jain index)");
         assertTrue(gini <= GINI_THRESHOLD, "Inequality too high (Gini coefficient)");
         assertTrue(minShare >= MIN_SHARE_THRESHOLD, "One consumer received too small a share of jobs");
@@ -124,7 +118,7 @@ public class ProducerConsumerIntegrationTest {
     /**
      * Gini coefficient (0..1):
      * 0 = perfectly equal distribution, 1 = maximal inequality.
-     * Uses sorted formula:
+     * Formula using sorted values:
      * G = (2*Σ(i*xi))/(n*Σxi) - (n+1)/n
      */
     private static double giniCoefficient(int[] counts) {
@@ -147,5 +141,6 @@ public class ProducerConsumerIntegrationTest {
         return Math.max(0.0, Math.min(1.0, g));
     }
 }
+
 
 
