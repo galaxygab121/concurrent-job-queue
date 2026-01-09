@@ -1,150 +1,160 @@
 import queue.JobQueue;
-import worker.Consumer;
 import worker.Producer;
+import worker.Consumer;
 
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Entry point for the Concurrent Job Queue simulation.
+ * Handles argument parsing, thread startup, timing, metrics, and shutdown.
+ */
 public class Main {
 
     public static void main(String[] args) throws InterruptedException {
 
-        // ---- DEFAULTS ----
-        int capacity = 5;
+        // =====================
+        // DEFAULT CONFIGURATION
+        // =====================
+        int capacity = 10;
         int producers = 2;
         int consumers = 2;
         int jobsPerProducer = 10;
+        boolean verbose = true;
+        int logEvery = 1;
+        boolean noSleep = false;
 
-        boolean verbose = true; // default: show logs
-        int logEvery = 50;      // default: print only occasionally
-
-        // ---- PARSE ARGS ----
+        // =====================
+        // ARGUMENT PARSING
+        // =====================
         for (int i = 0; i < args.length; i++) {
-            String a = args[i];
-
-            if (a.equalsIgnoreCase("--capacity") && i + 1 < args.length) {
-                capacity = Integer.parseInt(args[++i]);
-            } else if (a.equalsIgnoreCase("--producers") && i + 1 < args.length) {
-                producers = Integer.parseInt(args[++i]);
-            } else if (a.equalsIgnoreCase("--consumers") && i + 1 < args.length) {
-                consumers = Integer.parseInt(args[++i]);
-            } else if (a.equalsIgnoreCase("--jobs") && i + 1 < args.length) {
-                jobsPerProducer = Integer.parseInt(args[++i]);
-            } else if (a.equalsIgnoreCase("--quiet")) {
-                verbose = false; // disables noisy per-job logs
-            } else if (a.equalsIgnoreCase("--logEvery") && i + 1 < args.length) {
-                logEvery = Integer.parseInt(args[++i]);
-            } else if (a.equalsIgnoreCase("--help")) {
-                printUsageAndExit();
+            switch (args[i]) {
+                case "--capacity":
+                    capacity = Integer.parseInt(args[++i]);
+                    break;
+                case "--producers":
+                    producers = Integer.parseInt(args[++i]);
+                    break;
+                case "--consumers":
+                    consumers = Integer.parseInt(args[++i]);
+                    break;
+                case "--jobs":
+                    jobsPerProducer = Integer.parseInt(args[++i]);
+                    break;
+                case "--quiet":
+                    verbose = false;
+                    logEvery = 50;
+                    break;
+                case "--noSleep":
+                    noSleep = true;
+                    break;
             }
         }
 
-        if (capacity <= 0 || producers <= 0 || consumers <= 0 || jobsPerProducer < 0) {
-            System.out.println("Invalid arguments.");
-            printUsageAndExit();
-        }
+        // =====================
+        // PRINT CONFIGURATION
+        // =====================
+        System.out.println("\n=== Configuration ===");
+        System.out.println(
+                "capacity=" + capacity +
+                ", producers=" + producers +
+                ", consumers=" + consumers +
+                ", jobsPerProducer=" + jobsPerProducer +
+                ", verbose=" + verbose +
+                ", logEvery=" + logEvery +
+                ", noSleep=" + noSleep
+        );
 
-        System.out.println("=== Configuration ===");
-        System.out.println("capacity=" + capacity
-                + ", producers=" + producers
-                + ", consumers=" + consumers
-                + ", jobsPerProducer=" + jobsPerProducer
-                + ", verbose=" + verbose
-                + ", logEvery=" + logEvery);
-        System.out.println();
-
+        // =====================
+        // SHARED QUEUE
+        // =====================
         JobQueue queue = new JobQueue(capacity);
 
-        Thread[] producerThreads = new Thread[producers];
-        Thread[] consumerThreads = new Thread[consumers];
-        Consumer[] consumerWorkers = new Consumer[consumers];
+        List<Thread> producerThreads = new ArrayList<>();
+        List<Consumer> consumerWorkers = new ArrayList<>();
+        List<Thread> consumerThreads = new ArrayList<>();
 
-        // ---- TIMING START ----
+        // =====================
+        // CREATE CONSUMERS
+        // =====================
+        for (int i = 0; i < consumers; i++) {
+            Consumer consumer = new Consumer(queue, i + 1, verbose, logEvery);
+            Thread t = new Thread(consumer, "Consumer-" + (i + 1));
+            consumerWorkers.add(consumer);
+            consumerThreads.add(t);
+        }
+
+        // =====================
+        // START TIMING
+        // =====================
         long startNs = System.nanoTime();
 
-        // Start consumers first
-        for (int i = 0; i < consumers; i++) {
-            consumerWorkers[i] = new Consumer(queue, i + 1, verbose, logEvery);
-            consumerThreads[i] = new Thread(consumerWorkers[i], "Consumer-" + (i + 1));
-            consumerThreads[i].start();
+        // Start consumers first (they block waiting for jobs)
+        for (Thread t : consumerThreads) {
+            t.start();
         }
 
-        // Start producers
+        // =====================
+        // CREATE & START PRODUCERS
+        // =====================
         for (int i = 0; i < producers; i++) {
-            long seed = 100L + i;
-            producerThreads[i] = new Thread(
-                    new Producer(queue, i + 1, jobsPerProducer, seed, verbose, logEvery),
-                    "Producer-" + (i + 1)
+            long seed = System.nanoTime() + i;
+            Producer producer = new Producer(
+                    queue,
+                    i + 1,
+                    jobsPerProducer,
+                    seed,
+                    verbose,
+                    logEvery,
+                    noSleep
             );
-            producerThreads[i].start();
+            Thread t = new Thread(producer, "Producer-" + (i + 1));
+            producerThreads.add(t);
+            t.start();
         }
 
-        // Wait producers
+        // =====================
+        // WAIT FOR PRODUCERS
+        // =====================
         for (Thread t : producerThreads) {
             t.join();
         }
 
-        // Shutdown so consumers exit once queue drains
+        // Signal consumers no more jobs are coming
         queue.shutdown();
 
-        // Wait consumers
+        // =====================
+        // WAIT FOR CONSUMERS
+        // =====================
         for (Thread t : consumerThreads) {
             t.join();
         }
 
-        // ---- TIMING END ----
         long endNs = System.nanoTime();
 
-        // ---- METRICS SUMMARY ----
+        // =====================
+        // METRICS
+        // =====================
         int totalProcessed = 0;
-        int min = Integer.MAX_VALUE;
-        int max = Integer.MIN_VALUE;
-
-        System.out.println("\n=== Metrics Summary ===");
         for (Consumer c : consumerWorkers) {
-            int count = c.getProcessedCount();
-            totalProcessed += count;
-            min = Math.min(min, count);
-            max = Math.max(max, count);
-            System.out.println("Consumer " + c.getConsumerId() + " processed: " + count);
+            totalProcessed += c.getProcessedCount();
         }
 
-        System.out.println("Total processed              : " + totalProcessed);
-        System.out.println("Min processed by a consumer  : " + min);
-        System.out.println("Max processed by a consumer  : " + max);
-
-        // ---- THROUGHPUT ----
         double elapsedSeconds = (endNs - startNs) / 1_000_000_000.0;
-        double jobsPerSecond = (elapsedSeconds > 0.0) ? (totalProcessed / elapsedSeconds) : 0.0;
+        double throughput = elapsedSeconds > 0
+                ? totalProcessed / elapsedSeconds
+                : 0.0;
 
-        System.out.println(String.format("Elapsed time (s)             : %.3f", elapsedSeconds));
-        System.out.println(String.format("Throughput (jobs/sec)        : %.2f", jobsPerSecond));
-
-        // ---- FAIRNESS REPORT ----
-        if (min == 0) {
-            System.out.println("Fairness WARNING: at least one consumer processed 0 jobs (possible starvation).");
-        } else {
-            double imbalanceRatio = (double) max / (double) min;
-            System.out.println("Fairness imbalance ratio (max/min): " + String.format("%.2f", imbalanceRatio));
-        }
-        System.out.println("Fairness spread (max - min)  : " + (max - min));
-
-        System.out.println("\nAll jobs processed. Queue shut down cleanly.");
-    }
-
-    private static void printUsageAndExit() {
-        System.out.println("Usage:");
-        System.out.println("  java -cp out Main");
-        System.out.println("  java -cp out Main --capacity 50 --producers 8 --consumers 8 --jobs 200 --quiet");
-        System.out.println();
-        System.out.println("Flags:");
-        System.out.println("  --capacity   <int>   queue capacity");
-        System.out.println("  --producers  <int>   number of producer threads");
-        System.out.println("  --consumers  <int>   number of consumer threads");
-        System.out.println("  --jobs       <int>   jobs per producer");
-        System.out.println("  --quiet              disable verbose per-job logs (recommended for throughput)");
-        System.out.println("  --logEvery   <int>   print progress every N jobs (when not quiet)");
-        System.out.println("  --help               show this message");
-        System.exit(0);
+        // =====================
+        // PRINT SUMMARY
+        // =====================
+        System.out.println("\n=== Summary ===");
+        System.out.println("Total jobs processed        : " + totalProcessed);
+        System.out.printf("Elapsed time (s)            : %.3f%n", elapsedSeconds);
+        System.out.printf("Throughput (jobs/sec)       : %.2f%n", throughput);
     }
 }
+
 
 
 
