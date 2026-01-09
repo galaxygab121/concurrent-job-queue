@@ -1,57 +1,75 @@
-package queue; // declares this file belongs to the "queue" package
+package queue;
 
-import java.util.LinkedList; // LinkedList implementation
-import java.util.Queue; // Queue interface
-import model.Job; // import the Job class from modelmodel package
+import model.Job;
 
-public class JobQueue { // defines a thread-safe job queue class
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
 
-    private final Queue<Job> queue = new LinkedList<>(); // internal storage for jobs (FIFO) First In First Out
-    private final int capacity; // maximum number of jobs allowed in the queue
-    private boolean shutdown = false; // flag to indicate "no more jobs will arrive"
+public class JobQueue {
 
-    public JobQueue(int capacity) { // constructor to set queue capacity
-        this.capacity = capacity; // store capacity
+    private final Deque<Job> queue = new ArrayDeque<>();
+    private final int capacity;
+
+    // "true" => fair lock (threads acquire lock roughly FIFO under contention)
+    private final ReentrantLock lock = new ReentrantLock(true);
+    private final Condition notFull = lock.newCondition();
+    private final Condition notEmpty = lock.newCondition();
+
+    private boolean shutdown = false;
+
+    public JobQueue(int capacity) {
+        this.capacity = capacity;
     }
 
-    // PUT: called by PRODUCERS to add jobs to the queue
-    // synchronized means only ONE thread can execute this method at a time (prevents race conditions)
-    public synchronized void put(Job job) throws InterruptedException {
-        // While the queue is full AND we are not shutting down, producer must wait
-        while (queue.size() >= capacity && !shutdown) {
-            wait(); // release the lock and sleep until another thread calls notifyAll()
-        }
+    public void put(Job job) throws InterruptedException {
+        lock.lockInterruptibly();
+        try {
+            while (queue.size() >= capacity && !shutdown) {
+                notFull.await();
+            }
 
-        // If shutdown was triggered, do not accept new jobs (just return)
-        if (shutdown) {
-            return;
-        }
+            if (shutdown) {
+                return; // ignore jobs after shutdown (matches your current semantics)
+            }
 
-        queue.add(job); // add the job to the queue (FIFO tail) First In First Out
-        notifyAll(); // wake up any waiting consumers (and possibly producers) to re-check conditions
+            queue.addLast(job); // FIFO
+            notEmpty.signal();  // wake ONE waiting consumer
+        } finally {
+            lock.unlock();
+        }
     }
 
-    // TAKE: called by CONSUMERS to remove jobs from the queue
-    // synchronized means only ONE thread can execute this method at a time (prevents race conditions)
-    public synchronized Job take() throws InterruptedException {
-        // While the queue is empty AND we are not shutting down, consumer must wait
-        while (queue.isEmpty() && !shutdown) {
-            wait(); // release the lock and sleep until a producer calls notifyAll()
-        }
+    public Job take() throws InterruptedException {
+        lock.lockInterruptibly();
+        try {
+            while (queue.isEmpty() && !shutdown) {
+                notEmpty.await();
+            }
 
-        // If queue is empty AND shutdown is true, return null to signal consumers to exit
-        if (queue.isEmpty() && shutdown) {
-            return null;
-        }
+            if (queue.isEmpty() && shutdown) {
+                return null;
+            }
 
-        Job job = queue.remove(); // remove the head (FIFO) First In First Out
-        notifyAll(); // wake up producers (queue might have space now) and other consumers
-        return job; // return job for processing
+            Job job = queue.removeFirst();
+            notFull.signal(); // wake ONE waiting producer
+            return job;
+        } finally {
+            lock.unlock();
+        }
     }
 
-    // SHUTDOWN: called when no more jobs will be produced
-    public synchronized void shutdown() {
-        shutdown = true; // signal shutdown mode
-        notifyAll(); // wake all waiting threads so they can stop waiting and exit if needed
+    public void shutdown() {
+        lock.lock();
+        try {
+            shutdown = true;
+            // wake everyone so they can exit or stop waiting
+            notEmpty.signalAll();
+            notFull.signalAll();
+        } finally {
+            lock.unlock();
+        }
     }
 }
+

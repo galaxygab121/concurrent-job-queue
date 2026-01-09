@@ -1,8 +1,10 @@
-# compiled output folder
+# Java build output
 out/
+out_test/
 
-# macOS junk
+# OS files
 .DS_Store
 
-# VS Code project settings (optional)
+# IDE files
+.idea/
 .vscode/
