@@ -1,44 +1,55 @@
-package worker; // declares this file belongs to the "worker" package
+package worker;
 
-import model.Job; // import Job
-import queue.JobQueue; // import JobQueue
+import model.Job;
+import queue.JobQueue;
 
-public class Consumer implements Runnable { // Consumer runs in a thread
+public class Consumer implements Runnable {
 
-    private final JobQueue queue; // reference to shared job queue
-    private final int consumerId; // identifier for logging
-    private int processedCount = 0; // tracks how many jobs this consumer processed
+    private final JobQueue queue;        // shared queue to pull jobs from
+    private final int consumerId;        // consumer identifier used for logs
+    private int processedCount = 0;      // number of jobs successfully processed
 
     public Consumer(JobQueue queue, int consumerId) {
-        this.queue = queue; // store queue reference
-        this.consumerId = consumerId; // store consumer id
+        this.queue = queue;             // store shared queue reference
+        this.consumerId = consumerId;   // store consumer id
     }
 
-    public int getProcessedCount() { // getter for metrics
-        return processedCount; // return number of processed jobs
+    public int getConsumerId() {
+        return consumerId;              // expose id for summary reporting
+    }
+
+    public int getProcessedCount() {
+        return processedCount;          // expose processed count for summary reporting
     }
 
     @Override
-    public void run() { // thread executes this method
+    public void run() {
         try {
-            while (true) { // keep consuming until shutdown signal (null job) is received
-                Job job = queue.take(); // take a job (may BLOCK if queue is empty)
+            while (true) {
+                // take() blocks if the queue is empty (until a producer adds work or shutdown occurs)
+                Job job = queue.take();
 
-                if (job == null) { // null means queue is shutdown and empty
-                    break; // exit the loop and end the thread
+                // null means: queue is shutdown AND empty -> time to exit cleanly
+                if (job == null) {
+                    break;
                 }
 
-                processedCount++; // increment metrics
-                System.out.println("Consumer " + consumerId + " processing " + job); // log
+                processedCount++; // record that we are processing a job
+                System.out.println("Consumer " + consumerId + " processing " + job);
 
-                Thread.sleep(job.getDurationMs()); // simulate job processing time
+                // simulate real work by sleeping for durationMs
+                Thread.sleep(job.getDurationMs());
 
-                System.out.println("Consumer " + consumerId + " finished " + job); // log completion
+                System.out.println("Consumer " + consumerId + " finished " + job);
             }
 
-            System.out.println("Consumer " + consumerId + " exiting. Processed=" + processedCount); // final log
-        } catch (InterruptedException ignored) { // if interrupted while sleeping/waiting
-            Thread.currentThread().interrupt(); // restore interrupt status
+            // after loop exits, log final count
+            System.out.println("Consumer " + consumerId + " exiting. Processed=" + processedCount);
+
+        } catch (InterruptedException ignored) {
+            // restore interrupt flag (best practice) so calling code can detect interruption
+            Thread.currentThread().interrupt();
         }
     }
 }
+

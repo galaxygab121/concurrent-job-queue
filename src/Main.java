@@ -1,52 +1,70 @@
-import queue.JobQueue; // import JobQueue (no package for Main, so use imports)
-import worker.Consumer; // import Consumer runnable
-import worker.Producer; // import Producer runnable
+import queue.JobQueue;
+import worker.Consumer;
+import worker.Producer;
 
-public class Main { // entrypoint class (contains main method)
+public class Main {
 
-    public static void main(String[] args) throws InterruptedException { // program start
-        int capacity = 5; // maximum jobs allowed in queue at any time
+    public static void main(String[] args) throws InterruptedException {
+        int capacity = 5;
+        int producers = 2;
+        int consumers = 2;
+        int jobsPerProducer = 10;
 
-        int producers = 2; // number of producer threads
-        int consumers = 2; // number of consumer threads
-        int jobsPerProducer = 10; // how many jobs each producer creates
+        JobQueue queue = new JobQueue(capacity);
 
-        JobQueue queue = new JobQueue(capacity); // create the shared bounded queue
+        Thread[] producerThreads = new Thread[producers];
+        Thread[] consumerThreads = new Thread[consumers];
 
-        Thread[] producerThreads = new Thread[producers]; // array to store producer threads
-        Thread[] consumerThreads = new Thread[consumers]; // array to store consumer threads
+        // Keep the Consumer objects so we can read processed counts after threads finish
+        Consumer[] consumerWorkers = new Consumer[consumers];
 
-        // Start consumers first (they will block waiting for jobs if queue is empty)
+        // Start consumers first: they will block on take() until jobs arrive
         for (int i = 0; i < consumers; i++) {
-            consumerThreads[i] = new Thread(
-                    new Consumer(queue, i + 1), // create consumer runnable with id
-                    "Consumer-" + (i + 1) // give thread a name for debugging
-            );
-            consumerThreads[i].start(); // start the consumer thread
+            consumerWorkers[i] = new Consumer(queue, i + 1);
+            consumerThreads[i] = new Thread(consumerWorkers[i], "Consumer-" + (i + 1));
+            consumerThreads[i].start();
         }
 
-        // Start producers (they will add jobs into the queue)
+        // Start producers: they will produce jobs and put() into the queue
         for (int i = 0; i < producers; i++) {
             producerThreads[i] = new Thread(
-                    new Producer(queue, i + 1, jobsPerProducer, 100L + i), // create producer with seed
-                    "Producer-" + (i + 1) // name the thread
+                    new Producer(queue, i + 1, jobsPerProducer, 100L + i),
+                    "Producer-" + (i + 1)
             );
-            producerThreads[i].start(); // start producer thread
+            producerThreads[i].start();
         }
 
         // Wait for all producers to finish generating jobs
         for (Thread t : producerThreads) {
-            t.join(); // blocks until producer thread completes
+            t.join();
         }
 
-        // Tell queue no more jobs will be produced; consumers will exit once queue drains
+        // Signal shutdown: consumers will exit after the queue drains
         queue.shutdown();
 
-        // Wait for all consumers to finish processing remaining jobs and exit cleanly
+        // Wait for consumers to finish processing remaining jobs
         for (Thread t : consumerThreads) {
-            t.join(); // blocks until consumer thread completes
+            t.join();
         }
 
-        System.out.println("All jobs processed. Queue shut down cleanly."); // final message
+        // ----- METRICS SUMMARY -----
+        int totalProcessed = 0;
+        int min = Integer.MAX_VALUE;
+        int max = Integer.MIN_VALUE;
+
+        System.out.println("\n=== Metrics Summary ===");
+        for (Consumer c : consumerWorkers) {
+            int count = c.getProcessedCount();
+            totalProcessed += count;
+            min = Math.min(min, count);
+            max = Math.max(max, count);
+            System.out.println("Consumer " + c.getConsumerId() + " processed: " + count);
+        }
+        System.out.println("Total processed: " + totalProcessed);
+        System.out.println("Min processed by a consumer: " + min);
+        System.out.println("Max processed by a consumer: " + max);
+
+        System.out.println("\nAll jobs processed. Queue shut down cleanly.");
     }
 }
+
