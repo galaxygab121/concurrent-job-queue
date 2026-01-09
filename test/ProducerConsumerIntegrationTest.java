@@ -1,37 +1,35 @@
 import org.junit.jupiter.api.Test;
 
-import queue.JobQueue;
-import worker.Consumer;
-import worker.Producer;
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import queue.JobQueue;
+import worker.Consumer;
+import worker.Producer;
+
+/**
+ * Integration tests for the Producer–Consumer system.
+ * - Verifies all jobs processed (no deadlocks)
+ * - Runs 5 trials and asserts worst-case fairness
+ */
 public class ProducerConsumerIntegrationTest {
 
     @Test
-    void fairness_distribution_is_reasonable() throws Exception {
-        int capacity = 50;
-        int producers = 8;
-        int consumers = 8;
-        int jobsPerProducer = 200;
-
-        boolean verbose = false;
-        int logEvery = 50;
-
-        boolean producerNoSleep = true;
-        boolean consumerNoSleep = true;
+    void endToEnd_allJobsProcessed_noDeadlock() throws Exception {
+        int capacity = 20;
+        int producers = 4;
+        int consumers = 4;
+        int jobsPerProducer = 100;
 
         JobQueue queue = new JobQueue(capacity);
 
-        // --- Start consumers ---
         List<Consumer> consumerWorkers = new ArrayList<>();
         List<Thread> consumerThreads = new ArrayList<>();
         for (int i = 0; i < consumers; i++) {
-            Consumer c = new Consumer(queue, i + 1, verbose, logEvery, consumerNoSleep);
+            Consumer c = new Consumer(queue, i + 1, false, 50, true);
             consumerWorkers.add(c);
 
             Thread t = new Thread(c, "Consumer-" + (i + 1));
@@ -39,108 +37,183 @@ public class ProducerConsumerIntegrationTest {
             t.start();
         }
 
-        // --- Start producers ---
         List<Thread> producerThreads = new ArrayList<>();
         for (int i = 0; i < producers; i++) {
-            long seed = 100L + i; // deterministic-ish for repeatability
-            Producer p = new Producer(queue, i + 1, jobsPerProducer, seed, verbose, logEvery, producerNoSleep);
+            Producer p = new Producer(queue, i + 1, jobsPerProducer, i + 42, false, 50, true);
 
             Thread t = new Thread(p, "Producer-" + (i + 1));
             producerThreads.add(t);
             t.start();
         }
 
-        // --- Wait for producers then shutdown ---
         for (Thread t : producerThreads) t.join();
         queue.shutdown();
-
-        // --- Wait for consumers to drain ---
         for (Thread t : consumerThreads) t.join();
 
-        // --- Collect counts ---
-        int[] counts = new int[consumerWorkers.size()];
-        int total = 0;
-        int min = Integer.MAX_VALUE;
-        int max = Integer.MIN_VALUE;
+        int totalProcessed = consumerWorkers.stream()
+                .mapToInt(Consumer::getProcessedCount)
+                .sum();
 
-        for (int i = 0; i < consumerWorkers.size(); i++) {
-            int processed = consumerWorkers.get(i).getProcessedCount();
-            counts[i] = processed;
-            total += processed;
-            min = Math.min(min, processed);
-            max = Math.max(max, processed);
-        }
-
-        int expectedTotal = producers * jobsPerProducer;
-        assertEquals(expectedTotal, total, "All jobs should be processed");
-
-        // --- Metrics ---
-        double jain = jainsFairnessIndex(counts);
-        double gini = giniCoefficient(counts);
-        double minShare = (total == 0) ? 0.0 : (min / (double) total);
-
-        // --- Print report (useful in CI logs) ---
-        System.out.println("\n=== Fairness Test Report ===");
-        System.out.println("Counts: " + Arrays.toString(counts));
-        System.out.println("Total : " + total);
-        System.out.printf("Jain  : %.4f%n", jain);
-        System.out.printf("Gini  : %.4f%n", gini);
-        System.out.printf("MinShare: %.4f (min=%d, max=%d)%n", minShare, min, max);
-
-        // --- Tightened thresholds based on your measured run:
-        // Jain ~ 0.9998, Gini ~ 0.0080, MinShare ~ 0.1225
-        final double JAIN_THRESHOLD = 0.995;
-        final double GINI_THRESHOLD = 0.03;
-        final double MIN_SHARE_THRESHOLD = 0.115;
-
-        // Starvation guard (no consumer should get 0 jobs)
-        assertTrue(min > 0, "Starvation detected: at least one consumer processed 0 jobs");
-
-        // Fairness assertions
-        assertTrue(jain >= JAIN_THRESHOLD, "Fairness too low (Jain index)");
-        assertTrue(gini <= GINI_THRESHOLD, "Inequality too high (Gini coefficient)");
-        assertTrue(minShare >= MIN_SHARE_THRESHOLD, "One consumer received too small a share of jobs");
+        assertEquals(producers * jobsPerProducer, totalProcessed, "All jobs should be processed");
     }
 
-    /** Jain's Fairness Index: (sum(x)^2) / (n * sum(x^2)) in (0,1] */
+    /**
+     * Runs 5 trials and asserts on WORST-CASE fairness metrics:
+     * - min Jain
+     * - max Gini
+     * - min MinShare
+     *
+     * Also asserts that no consumer starves (min processed > 0) in any trial.
+     */
+    @Test
+    void fairness_distribution_is_reasonable_worstCaseOver5Trials() throws Exception {
+
+        // ---------- Test configuration ----------
+        final int trials = 5;
+        final int capacity = 50;
+        final int producers = 8;
+        final int consumers = 8;
+        final int jobsPerProducer = 200;
+
+        final boolean verbose = false;
+        final int logEvery = 50;
+        final boolean producerNoSleep = true;
+        final boolean consumerNoSleep = true;
+
+        // Based on your new output (Jain ~0.9998, Gini ~0.006–0.008, MinShare ~0.122–0.123)
+        // These are "tight but safe" thresholds for worst-case across 5 trials.
+        final double JAIN_THRESHOLD = 0.9970;
+        final double GINI_THRESHOLD = 0.0200;
+        final double MIN_SHARE_THRESHOLD = 0.1200;
+
+        double worstJain = Double.POSITIVE_INFINITY;        // we want min
+        double worstMinShare = Double.POSITIVE_INFINITY;    // we want min
+        double worstGini = Double.NEGATIVE_INFINITY;        // we want max
+
+        int worstTrialIndex = -1;
+        int[] worstCounts = null;
+
+        for (int trial = 1; trial <= trials; trial++) {
+
+            JobQueue queue = new JobQueue(capacity);
+
+            // ----- Start consumers -----
+            List<Consumer> consumerWorkers = new ArrayList<>();
+            List<Thread> consumerThreads = new ArrayList<>();
+            for (int i = 0; i < consumers; i++) {
+                Consumer c = new Consumer(queue, i + 1, verbose, logEvery, consumerNoSleep);
+                consumerWorkers.add(c);
+
+                Thread t = new Thread(c, "Trial-" + trial + "-Consumer-" + (i + 1));
+                consumerThreads.add(t);
+                t.start();
+            }
+
+            // ----- Start producers -----
+            List<Thread> producerThreads = new ArrayList<>();
+            for (int i = 0; i < producers; i++) {
+                long seed = (trial * 10_000L) + (100 + i); // deterministic per trial
+                Producer p = new Producer(queue, i + 1, jobsPerProducer, seed, verbose, logEvery, producerNoSleep);
+
+                Thread t = new Thread(p, "Trial-" + trial + "-Producer-" + (i + 1));
+                producerThreads.add(t);
+                t.start();
+            }
+
+            for (Thread t : producerThreads) t.join();
+            queue.shutdown();
+            for (Thread t : consumerThreads) t.join();
+
+            // ----- Collect counts -----
+            int[] counts = new int[consumerWorkers.size()];
+            int total = 0;
+            int min = Integer.MAX_VALUE;
+            int max = Integer.MIN_VALUE;
+
+            for (int i = 0; i < consumerWorkers.size(); i++) {
+                int processed = consumerWorkers.get(i).getProcessedCount();
+                counts[i] = processed;
+                total += processed;
+                min = Math.min(min, processed);
+                max = Math.max(max, processed);
+            }
+
+            int expectedTotal = producers * jobsPerProducer;
+            assertEquals(expectedTotal, total, "Trial " + trial + ": all jobs should be processed");
+            assertTrue(min > 0, "Trial " + trial + ": starvation detected (a consumer processed 0 jobs)");
+
+            double jain = jainsFairnessIndex(counts);
+            double gini = giniCoefficient(counts);
+            double minShare = (total == 0) ? 0.0 : (min / (double) total);
+
+            // ----- Report -----
+            System.out.println("\n=== Fairness Trial " + trial + " Report ===");
+            System.out.println("Counts: " + Arrays.toString(counts));
+            System.out.println("Total : " + total);
+            System.out.printf("Jain  : %.4f%n", jain);
+            System.out.printf("Gini  : %.4f%n", gini);
+            System.out.printf("MinShare: %.4f (min=%d, max=%d)%n", minShare, min, max);
+
+            // ----- Track worst-case -----
+            if (jain < worstJain) worstJain = jain;
+            if (gini > worstGini) worstGini = gini;
+            if (minShare < worstMinShare) worstMinShare = minShare;
+
+            // Save the trial counts when any metric sets a new worst record
+            if (worstCounts == null || jain == worstJain || gini == worstGini || minShare == worstMinShare) {
+                worstTrialIndex = trial;
+                worstCounts = Arrays.copyOf(counts, counts.length);
+            }
+        }
+
+        // ----- Final worst-case summary -----
+        System.out.println("\n=== Worst-Case Summary (over " + trials + " trials) ===");
+        System.out.println("Worst trial: " + worstTrialIndex);
+        System.out.println("Counts     : " + Arrays.toString(worstCounts));
+        System.out.printf("Min Jain   : %.4f (threshold %.4f)%n", worstJain, JAIN_THRESHOLD);
+        System.out.printf("Max Gini   : %.4f (threshold %.4f)%n", worstGini, GINI_THRESHOLD);
+        System.out.printf("Min MinShare: %.4f (threshold %.4f)%n", worstMinShare, MIN_SHARE_THRESHOLD);
+
+        assertTrue(worstJain >= JAIN_THRESHOLD, "Worst-case Jain below threshold");
+        assertTrue(worstGini <= GINI_THRESHOLD, "Worst-case Gini above threshold");
+        assertTrue(worstMinShare >= MIN_SHARE_THRESHOLD, "Worst-case MinShare below threshold");
+    }
+
+    // ======================
+    // Fairness metric helpers
+    // ======================
+
     private static double jainsFairnessIndex(int[] counts) {
         double sum = 0.0;
         double sumSq = 0.0;
+
         for (int c : counts) {
             sum += c;
             sumSq += (double) c * c;
         }
-        int n = counts.length;
-        if (n == 0 || sumSq == 0.0) return 0.0;
-        return (sum * sum) / (n * sumSq);
+
+        return (sum * sum) / (counts.length * sumSq);
     }
 
-    /**
-     * Gini coefficient (0..1):
-     * 0 = perfectly equal distribution, 1 = maximal inequality.
-     * Formula using sorted values:
-     * G = (2*Σ(i*xi))/(n*Σxi) - (n+1)/n
-     */
     private static double giniCoefficient(int[] counts) {
         int n = counts.length;
-        if (n == 0) return 0.0;
 
-        int[] x = Arrays.copyOf(counts, n);
-        Arrays.sort(x);
+        double mean = Arrays.stream(counts).average().orElse(0.0);
+        if (mean == 0) return 0.0;
 
-        long sum = 0;
-        for (int v : x) sum += v;
-        if (sum == 0) return 0.0;
-
-        long weightedSum = 0;
+        double sumDiff = 0.0;
         for (int i = 0; i < n; i++) {
-            weightedSum += (long) (i + 1) * x[i];
+            for (int j = 0; j < n; j++) {
+                sumDiff += Math.abs(counts[i] - counts[j]);
+            }
         }
 
-        double g = (2.0 * weightedSum) / (n * (double) sum) - (n + 1.0) / n;
-        return Math.max(0.0, Math.min(1.0, g));
+        return sumDiff / (2.0 * n * n * mean);
     }
 }
+
+
+
 
 
 
