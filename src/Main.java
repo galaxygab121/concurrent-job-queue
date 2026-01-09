@@ -45,6 +45,9 @@ public class Main {
                     verbose = false;
                     logEvery = 50;
                     break;
+                case "--logEvery":
+                    logEvery = Integer.parseInt(args[++i]);
+                    break;
                 case "--noSleep":
                     noSleep = true;
                     break;
@@ -133,17 +136,54 @@ public class Main {
         long endNs = System.nanoTime();
 
         // =====================
-        // METRICS
+        // METRICS (THROUGHPUT)
         // =====================
         int totalProcessed = 0;
-        for (Consumer c : consumerWorkers) {
-            totalProcessed += c.getProcessedCount();
+        int[] counts = new int[consumerWorkers.size()];
+
+        for (int i = 0; i < consumerWorkers.size(); i++) {
+            counts[i] = consumerWorkers.get(i).getProcessedCount();
+            totalProcessed += counts[i];
         }
 
         double elapsedSeconds = (endNs - startNs) / 1_000_000_000.0;
-        double throughput = elapsedSeconds > 0
-                ? totalProcessed / elapsedSeconds
-                : 0.0;
+        double throughput = (elapsedSeconds > 0) ? (totalProcessed / elapsedSeconds) : 0.0;
+
+        // =====================
+        // FAIRNESS / STARVATION
+        // =====================
+        int min = Integer.MAX_VALUE;
+        int max = Integer.MIN_VALUE;
+        int starved = 0;
+
+        for (int c : counts) {
+            min = Math.min(min, c);
+            max = Math.max(max, c);
+            if (c == 0) starved++;
+        }
+
+        double mean = (counts.length > 0) ? (totalProcessed / (double) counts.length) : 0.0;
+
+        // Std dev
+        double variance = 0.0;
+        for (int c : counts) {
+            double diff = c - mean;
+            variance += diff * diff;
+        }
+        variance = (counts.length > 0) ? (variance / counts.length) : 0.0;
+        double stdDev = Math.sqrt(variance);
+
+        // Coefficient of variation: stdDev / mean
+        double cv = (mean > 0) ? (stdDev / mean) : 0.0;
+
+        // Imbalance ratio: max/min (avoid divide-by-zero)
+        double imbalanceRatio = (min > 0) ? (max / (double) min) : Double.POSITIVE_INFINITY;
+
+        int spread = max - min;
+
+        // Simple label (tweak thresholds however you want)
+        // CV near 0 => very even distribution
+        String fairnessLabel = (starved > 0) ? "STARVATION" : (cv <= 0.20 ? "FAIR" : "UNEVEN");
 
         // =====================
         // PRINT SUMMARY
@@ -152,8 +192,27 @@ public class Main {
         System.out.println("Total jobs processed        : " + totalProcessed);
         System.out.printf("Elapsed time (s)            : %.3f%n", elapsedSeconds);
         System.out.printf("Throughput (jobs/sec)       : %.2f%n", throughput);
+
+        System.out.println("\n=== Fairness Report ===");
+        for (Consumer c : consumerWorkers) {
+            int processed = c.getProcessedCount();
+            double pct = (totalProcessed > 0) ? (100.0 * processed / totalProcessed) : 0.0;
+            System.out.printf("Consumer %d processed: %d (%.2f%%)%n", c.getConsumerId(), processed, pct);
+        }
+
+        System.out.println("Min processed               : " + min);
+        System.out.println("Max processed               : " + max);
+        System.out.println("Spread (max-min)            : " + spread);
+        System.out.printf("Mean                         : %.2f%n", mean);
+        System.out.printf("Std Dev                      : %.2f%n", stdDev);
+        System.out.printf("Coeff of Variation (CV)      : %.3f%n", cv);
+        System.out.printf("Imbalance ratio (max/min)    : %s%n",
+                Double.isInfinite(imbalanceRatio) ? "INF (min=0)" : String.format("%.2f", imbalanceRatio));
+        System.out.println("Starved consumers (0 jobs)  : " + starved);
+        System.out.println("Fairness label              : " + fairnessLabel);
     }
 }
+
 
 
 

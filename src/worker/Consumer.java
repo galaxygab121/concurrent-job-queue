@@ -19,7 +19,7 @@ public class Consumer implements Runnable {
         this.queue = queue;
         this.consumerId = consumerId;
         this.verbose = verbose;
-        this.logEvery = logEvery;
+        this.logEvery = Math.max(1, logEvery);
     }
 
     @Override
@@ -34,9 +34,7 @@ public class Consumer implements Runnable {
                 }
 
                 if (verbose && processedCount % logEvery == 0) {
-                    System.out.println(
-                            "Consumer " + consumerId + " processing " + job
-                    );
+                    System.out.println("Consumer " + consumerId + " processing " + job);
                 }
 
                 // Simulate work
@@ -47,9 +45,7 @@ public class Consumer implements Runnable {
                 processedCount++;
 
                 if (verbose && processedCount % logEvery == 0) {
-                    System.out.println(
-                            "Consumer " + consumerId + " finished " + job
-                    );
+                    System.out.println("Consumer " + consumerId + " finished " + job);
                 }
             }
         } catch (InterruptedException e) {
@@ -60,7 +56,12 @@ public class Consumer implements Runnable {
     public int getProcessedCount() {
         return processedCount;
     }
+
+    public int getConsumerId() {
+        return consumerId;
+    }
 }
+
 
 
 
