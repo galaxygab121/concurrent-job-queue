@@ -68,6 +68,12 @@ public class Main {
         Consumer[] consumerWorkers = new Consumer[consumers];
 
         // =====================
+        // TIMING (THROUGHPUT)
+        // =====================
+        // Use nanoTime for accurate elapsed timing (monotonic clock)
+        long startNs = System.nanoTime();
+
+        // =====================
         // START CONSUMERS FIRST
         // =====================
         // Consumers block on take() until jobs arrive
@@ -79,6 +85,9 @@ public class Main {
             );
             consumerThreads[i].start();
         }
+
+        long endNs = System.nanoTime();
+
 
         // =====================
         // START PRODUCERS
@@ -136,6 +145,20 @@ public class Main {
         System.out.println("Total jobs processed        : " + totalProcessed);
         System.out.println("Minimum jobs by a consumer  : " + min);
         System.out.println("Maximum jobs by a consumer  : " + max);
+
+        // =====================
+        // THROUGHPUT (JOBS / SEC)
+        // =====================
+        double elapsedSeconds = (endNs - startNs) / 1_000_000_000.0;
+
+        // Avoid divide-by-zero (in case elapsed is extremely small)
+        double jobsPerSecond = (elapsedSeconds > 0.0)
+            ? (totalProcessed / elapsedSeconds)
+            : 0.0;
+
+        System.out.println(String.format("Elapsed time (s)            : %.3f", elapsedSeconds));
+        System.out.println(String.format("Throughput (jobs/sec)       : %.2f", jobsPerSecond));
+
 
         // =====================
         // FAIRNESS ANALYSIS
