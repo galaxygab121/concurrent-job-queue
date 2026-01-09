@@ -1,39 +1,49 @@
-package worker; // declares this file belongs to the "worker" package
+package worker;
 
-import model.Job; // import Job
-import queue.JobQueue; // import JobQueue
-import java.util.Random; // used to generate random job durations
+import model.Job;
+import queue.JobQueue;
+import java.util.Random;
 
-public class Producer implements Runnable { // Producer runs in a thread, so it implements Runnable
+public class Producer implements Runnable {
 
-    private final JobQueue queue; // reference to the shared job queue
-    private final int producerId; // identifier for this producer (for logging + job IDs)
-    private final int jobsToProduce; // number of jobs this producer will create
-    private final Random rand; // random generator for job durations
+    private final JobQueue queue;
+    private final int producerId;
+    private final int jobsToProduce;
+    private final Random rand;
 
-    public Producer(JobQueue queue, int producerId, int jobsToProduce, long seed) {
-        this.queue = queue; // store queue reference
-        this.producerId = producerId; // store producer id
-        this.jobsToProduce = jobsToProduce; // store number of jobs to produce
-        this.rand = new Random(seed); // initialize random with a seed for reproducible runs
+    private final boolean verbose;   // controls whether per-job logs print
+    private final int logEvery;      // print every N jobs (when verbose is true)
+
+    public Producer(JobQueue queue, int producerId, int jobsToProduce, long seed, boolean verbose, int logEvery) {
+        this.queue = queue;
+        this.producerId = producerId;
+        this.jobsToProduce = jobsToProduce;
+        this.rand = new Random(seed);
+        this.verbose = verbose;
+        this.logEvery = Math.max(1, logEvery);
     }
 
     @Override
-    public void run() { // the thread executes this method
+    public void run() {
         try {
-            for (int i = 0; i < jobsToProduce; i++) { // loop to generate jobs
-                int jobId = producerId * 1000 + i; // unique-ish job id based on producer + index
-                int durationMs = 200 + rand.nextInt(401); // random duration between 200..600 ms
+            for (int i = 0; i < jobsToProduce; i++) {
+                int jobId = producerId * 1000 + i;
+                int durationMs = 200 + rand.nextInt(401);
 
-                Job job = new Job(jobId, durationMs); // create a new job object
-                queue.put(job); // put job into the shared queue (may BLOCK if queue is full)
+                Job job = new Job(jobId, durationMs);
+                queue.put(job);
 
-                System.out.println("Producer " + producerId + " produced " + job); // log
+                // Print occasionally so terminal I/O doesn't dominate throughput
+                if (verbose && (i % logEvery == 0)) {
+                    System.out.println("Producer " + producerId + " produced " + job);
+                }
 
-                Thread.sleep(75); // small pause to simulate time between job submissions
+                // OPTIONAL: if you want max throughput, remove this sleep
+                // Thread.sleep(75);
             }
-        } catch (InterruptedException ignored) { // if thread is interrupted while waiting/sleeping
-            Thread.currentThread().interrupt(); // re-set interrupt flag (best practice)
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
         }
     }
 }
+
